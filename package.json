@@ -1,0 +1,36 @@
+{
+  "name": "agent-retrieval-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript CLI RAG agent for construction estimating",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.0.0",
+    "ai": "^4.0.0",
+    "dotenv": "^16.4.0",
+    "papaparse": "^5.4.0",
+    "pdfjs-dist": "^4.5.0",
+    "tesseract.js": "^5.1.0",
+    "vectra": "^0.11.1",
+    "wink-bm25-text-search": "^3.1.0",
+    "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "canvas": "^2.11.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/papaparse": "^5.3.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

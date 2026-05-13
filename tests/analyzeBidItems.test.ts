@@ -1,0 +1,58 @@
+import { describe, it, expect, vi } from "vitest";
+import type { CsvChunk } from "../src/types.js";
+
+const fakeChunk: CsvChunk = {
+  id: "csv::file::P1::100",
+  summary: "ITEM 100 — TEST (EACH): 3 bids in project P1.",
+  rows: [
+    { PROJ_ID: "P1", ITEM_NO: "100", BIDDER: "Alpha", UNIT_PR: "100", EXT_AMT: "1000" },
+    { PROJ_ID: "P1", ITEM_NO: "100", BIDDER: "Beta", UNIT_PR: "110", EXT_AMT: "1100" },
+    { PROJ_ID: "P1", ITEM_NO: "100", BIDDER: "Gamma", UNIT_PR: "500", EXT_AMT: "5000" },
+  ],
+  columnMappings: [],
+  outliers: [
+    {
+      bidder: "Gamma",
+      unitPr: 500,
+      deviation: "high",
+      methods: ["iqr", "mad", "ratio_to_min"],
+      detail: "unitPr 500 vs median 110.00 (flagged by: iqr, mad, ratio_to_min)",
+    },
+  ],
+  qualityScore: 1,
+  groundedness: "direct",
+  confidence: 1,
+  caveats: [],
+};
+
+vi.mock("../src/ingestion/ingestor.js", () => ({
+  getAllCsvChunks: () => [fakeChunk],
+  ingest: vi.fn(),
+  listIngested: vi.fn(),
+}));
+
+import { analyzeBidItems } from "../src/tools/analyzeBidItems.js";
+
+const toolOpts = { toolCallId: "test", messages: [] };
+
+describe("analyzeBidItems tool", () => {
+  it("outlier_detection preserves OutlierFlag.methods on each flagged bidder", async () => {
+    const out = await analyzeBidItems.execute!(
+      {
+        operation: "outlier_detection",
+        itemNo: "100",
+        n: 5,
+      },
+      toolOpts,
+    );
+
+    expect(out.operation).toBe("outlier_detection");
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]).toMatchObject({
+      bidder: "Gamma",
+      unitPr: 500,
+      deviation: "high",
+      methods: ["iqr", "mad", "ratio_to_min"],
+    });
+  });
+});
