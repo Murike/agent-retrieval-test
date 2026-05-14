@@ -20,7 +20,10 @@ import { runAgent } from "../src/agent/agent.js";
 
 describe("runAgent end-to-end", () => {
   it("returns a structured AgentAnswer with caveats and sources", async () => {
-    const answer = await runAgent("Who has the cheapest bid for ITEM 100?");
+    const { answer, history } = await runAgent(
+      "Who has the cheapest bid for ITEM 100?",
+      [],
+    );
 
     expect(answer.answer).toContain("Alpha");
     expect(answer.confidence).toBe("high");
@@ -31,6 +34,8 @@ describe("runAgent end-to-end", () => {
       type: "csv_row",
       reference: "csv::file::P1::100",
     });
+    expect(history.length).toBeGreaterThan(0);
+    expect(history[0].role).toBe("user");
   });
 
   it("returns a low-confidence fallback when generateText output isn't JSON", async () => {
@@ -40,7 +45,7 @@ describe("runAgent end-to-end", () => {
       text: "I have no idea, sorry.",
     } as any);
 
-    const answer = await runAgent("nonsense");
+    const { answer } = await runAgent("nonsense", []);
     expect(answer.confidence).toBe("low");
     expect(answer.grounded_in_context).toBe(false);
     expect(answer.data_caveats.length).toBeGreaterThan(0);
