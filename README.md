@@ -1,157 +1,112 @@
 # CSV + PDF RAG Agent
 
-A small TypeScript CLI that ingests CSV and PDF files, maps CSV columns to semantic roles, indexes everything for hybrid retrieval, and answers natural-language questions through an LLM tool loop. Every answer carries explicit confidence, groundedness, caveats, and source references. The example data in this repo is construction-bid data, but the system makes no domain-specific assumptions about CSV content.
+TypeScript CLI that ingests CSV and PDF files, indexes them for hybrid retrieval (BM25 + dense vectors), and answers natural-language questions through an LLM tool loop. Every answer carries explicit `confidence`, `grounded_in_context`, `data_caveats`, and `sources`. Example data is construction bid tabulation, but the system makes as few domain-specific assumptions as possible — CSV headers are resolved to semantic roles at ingestion time so the same agent works on any CSV.
 
-## How to run
+## Quickstart
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Configure environment
-cp .env.example .env
-# edit .env and set OPENAI_API_KEY
-
-# 3. Start the REPL
-npm run dev
+cp .env.example .env && $EDITOR .env   # set OPENAI_API_KEY
+npm run dev                            # starts the REPL
 ```
 
-`npm run build` produces a JavaScript build in `dist/`; `npm start` runs it. `npm test` runs the vitest suite. `npm run typecheck` runs `tsc --noEmit`.
+`npm test` runs the vitest suite. `npm run build` produces a JS build in `dist/`; `npm start` runs it. Node ≥ 20 required.
 
 ### Recommended: install `ocrmypdf` for fast OCR
 
-PDF pages without a usable text layer are OCR'd. The primary OCR path shells out to `ocrmypdf`, which wraps native Tesseract with deskew/clean preprocessing and is dramatically faster than the pure-JS fallback. Install it once at the OS level:
+PDF pages without a usable text layer are OCR'd. The fast path shells out to `ocrmypdf`:
 
 - Linux: `sudo apt install -y ocrmypdf`
 - macOS: `brew install ocrmypdf`
 
-If `ocrmypdf` isn't on `PATH`, the system transparently falls back to a pure-Node pipeline (`pdf-to-img` rasterization + `tesseract.js` OCR). The fallback works everywhere Node runs — no extra system libraries — but is several times slower per page. You'll see a one-time `[pdf] ocrmypdf not found on PATH …` warning when it kicks in.
+Without it, the system falls back to a pure-Node pipeline (`pdf-to-img` + `tesseract.js`) — slower but no system deps.
 
-## Environment variables
-
-| Variable         | Required | Purpose                                                          |
-|------------------|----------|------------------------------------------------------------------|
-| `OPENAI_API_KEY` | yes      | Used for `gpt-4o`, `gpt-4o-mini`, and `text-embedding-3-small`.  |
-
-## REPL commands
+## REPL
 
 ```
-> /help
-Commands:
-  /help              show this help
-  /quit              exit
-  /files             list ingested files
-  /ingest <path>     ingest a CSV or PDF file
-  <free text>        ask the agent a question
-
-> /ingest ./data/bids.csv
-Ingested ./data/bids.csv [csv] — 42 chunks.
-Caveats:
-  - Engineer estimate of unit price is zero
-  - Unmapped columns: REGION
-
-> Who has the lowest unit price for ITEM 4040350 in project 0676350?
-{
-  "answer": "Blythe Construction at $93.90 per ton (lowest of 3 rows).",
-  "confidence": "high",
-  "grounded_in_context": true,
-  "data_caveats": [],
-  "sources": [
-    { "type": "csv_row", "reference": "csv::bids.csv::0676350::4040350" }
-  ]
-}
-
-> Please ingest ./data/plans.pdf and summarize any drainage callouts.
-# The agent calls ingestFile, then queryPdf, then returns the structured JSON answer.
+/help              show commands         /ingest <path>     ingest a CSV or PDF
+/quit              exit                  /reset             clear chat history
+/files             list ingested files   /history           show message count
+<free text>        ask the agent
 ```
 
-Slash commands are handled by the REPL directly. Any non-slash input is sent to the agent — there is no regex pre-routing to guess ingestion intent. If the user asks the agent in plain English to ingest a file, the agent invokes the `ingestFile` tool.
-
-### A non-bid example
-
-The same agent works on any CSV whose columns map to the canonical semantic roles. For a sales-order CSV with headers `customer_id, product, qty, unit_price, total`, the same question shape works:
-
-```
-> /ingest ./data/orders.csv
-Ingested ./data/orders.csv [csv] — 18 chunks.
-
-> Who has the highest unit price for product SKU-1042?
-{
-  "answer": "Acme Corp at $42.50 per unit (3 orders).",
-  "confidence": "high",
-  "grounded_in_context": true,
-  "data_caveats": [],
-  "sources": [
-    { "type": "csv_row", "reference": "csv::orders.csv::SKU-1042" }
-  ]
-}
-```
-
-No code change is required — `customer_id` and `product` both resolve to the `identifier` role, `qty` to `quantity`, `unit_price` to `price`, `total` to `amount`. The tools (`analyzeNumericFields`, `searchDocuments`) read those roles instead of hard-coded field names.
+Ingest can also be done using natural language, pulling more files at once.
 
 ## Architecture
 
 ```
 src/
 ├── types.ts                     — Shared contracts (CsvChunk, PdfChunk, AgentAnswer, FieldRole, …)
-├── schema/csvRow.ts             — Dynamic Zod row schema built from column mappings (numeric ← role)
+├── chunking/
+│   ├── config.ts                — Single source of truth for chunk-size parameters
+│   ├── csv.ts                   — groupByIdentifier / groupByRowWindow
+│   └── pdf.ts                   — splitPageText (intra-page overlap windowing)
 ├── ingestion/
-│   ├── columnMapper.ts          — Two-tier (synonym → LLM) mapping over the CanonicalField registry
-│   ├── outliers.ts              — IQR + MAD + ratio-to-min outlier detection (party + amount)
-│   ├── csvIngestor.ts           — Parse → role-map → validate → group by identifiers → summarize → flag
-│   ├── pdfIngestor.ts           — Text-layer extraction, Tesseract OCR fallback
-│   └── ingestor.ts              — Dispatcher + in-memory registry
-├── store/vectorStore.ts         — Orama in-memory hybrid index (BM25 + vector)
+│   ├── columnMapper.ts          — Two-tier (synonym → LLM) header → semantic-role mapping
+│   ├── outliers.ts              — IQR + MAD + ratio-to-min over party amounts
+│   ├── csvIngestor.ts           — Parse → role-map → validate → chunk → flag outliers
+│   ├── pdfIngestor.ts           — Text-layer extraction; ocrmypdf primary, pdf-to-img fallback
+│   └── ingestor.ts              — Dispatcher + in-memory file registry
+├── schema/csvRow.ts             — Zod row schema built from column mappings (numeric ← role)
+├── store/vectorStore.ts         — Orama in-memory hybrid index (BM25 + dense vectors)
 ├── tools/
 │   ├── searchDocuments.ts       — Hybrid retrieval over CSV + PDF chunks
-│   ├── analyzeNumericFields.ts  — top_n_by_amount, outlier_detection, summarize, compare_parties
+│   ├── analyzeNumericFields.ts  — top_n_groups | outlier_detection | summarize | compare_parties
 │   ├── queryPdf.ts              — PDF-only retrieval with confidence gating
+│   ├── compare.ts               — Deterministic max/min/sort over values from prior turns
 │   └── ingestFile.ts            — File ingestion exposed as a tool
+├── chat/history.ts              — Conversation history wrapper (CoreMessage[])
 ├── agent/
-│   ├── systemPrompt.ts          — Tool-use-first prompt with AgentAnswer JSON contract
-│   └── agent.ts                 — generateText loop with the four tools + runtime schema preface
+│   ├── systemPrompt.ts          — Tool-use contract, reference-resolution rules, AgentAnswer JSON shape
+│   └── agent.ts                 — Vercel AI SDK generateText loop, history-aware
 ├── repl/repl.ts                 — node:repl with eval hook
 └── index.ts                     — dotenv + env validation + REPL bootstrap
 ```
 
-Layer responsibilities, in one line each:
-
-- **types**: stable contracts shared across modules.
-- **schema**: runtime validation built after column mapping.
-- **ingestion**: file → typed chunks, including outliers and confidence.
-- **store**: write + search over chunks via Orama hybrid (BM25 + vector) in one typed index.
-- **tools**: LLM-facing capabilities — small parameter schemas, predictable outputs.
-- **agent**: configures the LLM tool loop and injects the current CSV schema into the prompt; no domain logic.
-- **repl**: user interaction only; no orchestration.
-
 ## Key decisions
 
-- **Vercel AI SDK for the tool loop.** `generateText` with `tools` already implements the iterate-with-tool-calls loop. No need to hand-roll an orchestration loop, no prompt-engineering tricks to invoke tools. `maxSteps: 10` is the only guardrail.
-- **`@orama/orama` for hybrid retrieval.** A single native-TS in-memory engine handles both BM25 keyword search and vector similarity behind one typed API, with `mode: "hybrid"` doing normalized weighted fusion (`hybridWeights: { text: 0.5, vector: 0.5 }`) in one call. Vector search alone misses literal identifiers (item numbers, customer IDs); BM25 alone misses paraphrases. Embeddings are computed externally with OpenAI `text-embedding-3-small` and supplied to Orama at insert and query time — no embedding plugin, no server, no native bindings, no temp folder, no transaction lock. `source` and `qualityScore` filters are pushed into the index via `where` rather than a post-filter loop.
-- **Two-tier column mapping (synonym → LLM) over a semantic role registry.** Real CSVs come in countless header dialects. A `CanonicalField` registry pairs each canonical name with a semantic role (`identifier`, `label`, `amount`, `price`, `quantity`, `unit`, `date`, `party`, `rank`, `extra`) and a list of synonyms. The deterministic synonym table handles the common cases at confidence 1.0; `gpt-4o-mini` handles the rest with an explicit confidence score and the role/label registry as context. Every mapping carries its role into downstream chunks so the ingestor, tools, and agent prompt can operate generically rather than on hard-coded field names.
-- **Explicit confidence and caveats on every chunk.** Both CSV and PDF chunks carry `qualityScore`, `confidence`, `groundedness`, and `caveats`/`warnings`. The agent's system prompt requires these to flow through to the final `AgentAnswer`.
-- **`node:repl` for the interface.** Built-in, no CLI framework dependency. Slash commands dispatched in the `eval` hook; everything else goes to the agent.
-- **No caching by design.** Caching would add a third write path and a freshness story. For a single-session CLI those costs aren't worth it.
-- **Simple production code over test-oriented indirection.** No DI containers, no repository wrappers, no registries that only exist to swap implementations in tests. Tests use `vi.mock` at module boundaries instead.
-- **Minimal typing.** Only the data contracts that cross module boundaries live in `types.ts`. No generic provenance wrappers, no aliases for two-string unions.
+### Chunking strategy
+
+All parameters and grouping/splitting logic live under `src/chunking/`. Strategy is picked by data shape:
+
+**CSV — chunk = group of rows sharing identifier values.** Headers are mapped to semantic roles (`identifier`, `label`, `price`, `amount`, `quantity`, `party`, `rank`, `unit`, `date`, `location`) by a two-tier resolver: a synonym table first (that assumes previously known and expected domain data), then `gpt-4o-mini` for what's left, with the canonical registry as context. Rows are grouped by the *concatenation of identifier-role column values* (e.g., `PROJ_ID::ITEM_NO`) — one chunk holds all rows for one identifier tuple. This makes "all bidders for this item" the retrieval unit and lets outlier detection run at ingest with every party present. Fallback for CSVs without identifier columns: fixed-row windows of `CSV_MAX_ROWS_PER_CHUNK = 100` rows. 100 was picked because it is large enough to be a semantically coherent section of the file but small enough that each chunk's embedded summary stays in the low-thousands of characters — cheap to embed, sharp for retrieval, and avoids fragmenting a 50k-row file into thousands of micro-chunks that would all compete for top-K slots.
+
+**PDF — chunk = page (or overlapping window of a page).** Page boundary is preserved so `sources[].reference` cites a page. Within a page, text > `PDF_MAX_CHARS_PER_CHUNK = 2000` chars is split into windows with `PDF_OVERLAP_CHARS = 200` chars of overlap. 2000 chars (≈ 500 tokens at ~4 chars/token) is the standard target window for general-purpose retrieval chunks: `text-embedding-3-small` accepts up to 8191 tokens, but smaller windows give sharper topic focus per chunk and avoid burying a specific callout inside a wall of surrounding text. The 200-char (10%) overlap preserves sentence and phrase continuity across split boundaries — without it, a sentence straddling a cut would land split across two chunks with each half losing context; with 10% overlap, that sentence appears intact in at least one chunk. All emission paths (text-layer, ocrmypdf, pdf-to-img fallback, failed-OCR shim) route through one `makePdfChunks` helper so splitting is uniform.
+
+### Hybrid retrieval (BM25 + dense vectors)
+
+Single in-memory Orama index over `text-embedding-3-small` (1536-d) embeddings + BM25 with a custom alphanumeric tokenizer (`/[a-z0-9]+/g`). 50/50 hybrid weights, similarity threshold 0 so BM25 keeps results dense vectors would discard. CSV identifiers like `6271074` need BM25; PDF prose needs vectors; running both eliminates the trade-off. `source` and `qualityScore` filters are pushed into the index via `where` rather than post-filtered.
+
+### Deviation detection
+
+`src/ingestion/outliers.ts` runs three methods over party amounts per group at ingest time: IQR fence, modified Z-score (MAD), and ratio-to-minimum. A registry is flagged if *any* method tags it, and the list of methods is preserved on the chunk. The system prompt requires the agent to quote the methods in answers (e.g., "Acme at $93.90/ton — flagged by iqr and ratio_to_min — 36% below median"). Surfaced explicitly via `analyzeNumericFields` with `operation: "outlier_detection"`.
+
+### Tool surface — agent as orchestrator
+
+Capabilities are exposed as five tools with Zod parameter schemas — `ingestFile`, `searchDocuments`, `analyzeNumericFields`, `queryPdf`, `compare`. The agent runs the Vercel AI SDK `generateText` loop with `maxSteps: 10`; there is no hand-rolled orchestration or regex pre-routing — even "please ingest this file" goes to the LLM, which calls `ingestFile`. The final answer is a strict JSON shape (`AgentAnswer`) validated with Zod after the loop terminates.
+
+### Conversation continuity
+
+`src/chat/history.ts` holds the `CoreMessage[]` across turns. The per-turn "currently ingested files / CSV columns" preamble is concatenated onto `system:` (rebuilt each turn) rather than baked into user messages, so prior turns stay clean and the model can resolve back-references like "those items". For comparative/aggregate questions over a prior enumerated list, the system prompt routes the model to the deterministic `compare` tool rather than letting it do arithmetic in prose — fixes a known LLM weakness on max/min/comparison over numbers in text.
+
+### Other choices, briefly
+
+- **Two-tier column mapping** keeps the common path deterministic (synonyms, `confidence: 1.0`) and uses the LLM only as a fallback, with each mapping's `tier` and `confidence` propagated as caveats so the data is auditable.
+- **`@orama/orama`** gives BM25 + vector fusion in one native-TS engine — no server, no native bindings, no migration story.
+- **No persistence by design** — single-session CLI; persistence adds freshness/migration costs not warranted by the assignment scope.
+- **No DI containers, no repository wrappers.** Tests mock at module boundaries with `vi.mock`.
+
+## Some things that can be improved
+
+- **Adaptive hybrid weights** — bump BM25 when the query has long digit runs (`/\d{4,}/`); bump vector for prose.
+- **Cross-page PDF re-chunking** — current splitter is intra-page only; paragraph-aware chunks spanning pages (with `pageRange: [start, end]`) would help long flowing specs.
+- **Cap oversized identifier groups** — today a 500-bidder group becomes one large chunk.
+- **Improved LLM enrichment of data** — A few extra calls to a model could help improve semantic context of the ingested data as a whole, making it more robust for unkown files.
+- **Cross-file normalization** — unit conversion, currency, scale alignment when comparing values across CSVs.
 
 ## Limitations
 
-- **In-memory state.** Chunks, the CSV registry, and the Orama index all reset on every process restart. There is no persistence layer.
-- **Single-process index.** Orama lives in heap and rebuilds on each run. Fine for tens of thousands of chunks; past that, snapshotting (`@orama/plugin-data-persistence`) or moving to a hosted store is the next step.
-- **OCR fallback is coarse.** It renders each page at 2× scale and runs Tesseract. Image-heavy or drawing-style PDFs are notoriously hard to OCR; expect low confidence on those, surfaced as a warning.
-- **No re-ranking.** Orama's hybrid fusion gives a sensible default; a learned re-ranker would do better but is out of scope.
-- **Header-mapping LLM is non-deterministic.** Tier-2 mapping calls a real LLM. Two runs over the same file with unusual headers may produce slightly different mappings. The `tier` and `confidence` fields make this auditable.
-- **Cross-file normalization (e.g., unit conversion, currency, scale) is not done.** If two CSVs use different units or scales for the same identifier, they are stored as-is. Downstream comparisons may be off.
-- **Schema inference is shallow.** Numeric detection is driven by the canonical role (`price`/`amount`/`quantity`/`rank`); columns that fall outside the registry are kept as strings.
-- **REPL file management is minimal.** `/files` lists; there is no `/forget`, no per-file inspection, no chunk dump.
-
-## Future improvements
-
-- Persistent search index via `@orama/plugin-data-persistence` (save/load Orama state to disk), or a managed vector DB if the corpus outgrows in-memory.
-- A learned re-ranker over the top hybrid candidates.
-- Better OCR for image-heavy PDFs (page segmentation, table extraction, layout-aware models).
-- Cross-file normalization (unit conversion, deflation, geographic adjustment).
-- Stronger schema inference: data-driven numeric detection, unit recognition, type coercion beyond `z.coerce.number()`.
-- Richer file management in the REPL: `/inspect <path>`, `/forget <path>`, chunk previews.
-- Smarter outlier rationales surfaced to the agent (e.g. "Gamma at $500 is 4.5× the median").
+- **In-memory only** — chunks, registry, and Orama index reset on each process start.
+- **Header-mapping LLM is non-deterministic** — same file with unusual headers may produce slightly different mappings between runs. `tier` + `confidence` make it auditable.
+- **OCR is best-effort** on drawing-heavy plan sets; surfaced as `confidence` / `warnings`, never silently dropped.
+- **No cross-file normalization** (units, currency, scale).
