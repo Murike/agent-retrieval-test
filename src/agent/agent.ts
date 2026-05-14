@@ -3,24 +3,46 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { searchDocuments } from "../tools/searchDocuments.js";
-import { analyzeBidItems } from "../tools/analyzeBidItems.js";
-import { queryPlanSet } from "../tools/queryPlanSet.js";
+import { analyzeNumericFields } from "../tools/analyzeNumericFields.js";
+import { queryPdf } from "../tools/queryPdf.js";
 import { ingestFile } from "../tools/ingestFile.js";
-import { listIngested } from "../ingestion/ingestor.js";
-import type { AgentAnswer } from "../types.js";
+import { compare } from "../tools/compare.js";
+import { listIngested, getAllCsvChunks } from "../ingestion/ingestor.js";
+import type { AgentAnswer, ColumnMapping } from "../types.js";
 
-function buildPrompt(userQuery: string): string {
+function buildSchemaPreface(): string {
+  const chunks = getAllCsvChunks();
+  if (chunks.length === 0) return "";
+
+  // Aggregate columnMappings across chunks. Use mappedName as the key so the
+  // same canonical field reported by multiple chunks collapses to one entry.
+  const byName = new Map<string, ColumnMapping>();
+  for (const c of chunks) {
+    for (const m of c.columnMappings) {
+      if (m.tier === "unmapped") continue;
+      if (!byName.has(m.mappedName)) byName.set(m.mappedName, m);
+    }
+  }
+  if (byName.size === 0) return "";
+
+  const lines = Array.from(byName.values()).map(
+    (m) => `- ${m.mappedName} (${m.role}): ${m.semanticLabel}`,
+  );
+  return `Currently ingested CSV columns (semantic roles):\n${lines.join("\n")}`;
+}
+
+function buildSystemAppendix(): string {
   const files = listIngested();
   if (files.length === 0) {
-    return `No files have been ingested yet.\n\nUser question: ${userQuery}`;
+    return "No files have been ingested yet.";
   }
   const lines = files
     .map((f) => `- ${f.path} (${f.type}, ${f.chunkCount} chunks)`)
     .join("\n");
+  const schemaPreface = buildSchemaPreface();
+  const schemaBlock = schemaPreface ? `\n\n${schemaPreface}` : "";
   return `Currently ingested files (already loaded — do not ask the user to provide them again, just query them with the available tools):
-${lines}
-
-User question: ${userQuery}`;
+${lines}${schemaBlock}`;
 }
 
 const AgentAnswerSchema = z.object({
@@ -48,28 +70,31 @@ function extractJson(text: string): string | null {
 
 export async function runAgent(
   userQuery: string,
-  history: CoreMessage[],
+  history: CoreMessage[] = [],
 ): Promise<{ answer: AgentAnswer; history: CoreMessage[] }> {
   const userMessage: CoreMessage = {
     role: "user",
-    content: buildPrompt(userQuery),
+    content: userQuery,
   };
+  const appendix = buildSystemAppendix();
+  const systemPrompt = appendix ? `${SYSTEM_PROMPT}\n\n${appendix}` : SYSTEM_PROMPT;
   const result = await generateText({
     model: openai("gpt-4o"),
     maxSteps: 10,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     tools: {
       ingestFile,
       searchDocuments,
-      analyzeBidItems,
-      queryPlanSet,
+      analyzeNumericFields,
+      queryPdf,
+      compare,
     },
     messages: [...history, userMessage],
   });
   const nextHistory: CoreMessage[] = [
     ...history,
     userMessage,
-    ...result.response.messages,
+    ...(result.response?.messages ?? []),
   ];
 
   const raw = extractJson(result.text);

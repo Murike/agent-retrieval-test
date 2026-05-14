@@ -1,8 +1,23 @@
+export type FieldRole =
+  | "identifier"
+  | "label"
+  | "location"
+  | "amount"
+  | "price"
+  | "quantity"
+  | "unit"
+  | "date"
+  | "party"
+  | "rank"
+  | "extra";
+
 export interface ColumnMapping {
   originalHeader: string;
   mappedName: string;
   tier: "synonym" | "llm" | "unmapped";
   confidence: number;
+  role: FieldRole;
+  semanticLabel: string;
 }
 
 export interface ColumnMappingResult {
@@ -11,8 +26,8 @@ export interface ColumnMappingResult {
 }
 
 export interface OutlierFlag {
-  bidder: string;
-  unitPr: number;
+  party: string;
+  amount: number;
   deviation: "high" | "low";
   methods: Array<"iqr" | "mad" | "ratio_to_min">;
   detail: string;

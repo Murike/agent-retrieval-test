@@ -16,11 +16,11 @@ function median(values: number[]): number {
 }
 
 export function detectOutliers(
-  bids: Array<{ bidder: string; unitPr: number }>,
+  rows: Array<{ party: string; amount: number }>,
 ): OutlierFlag[] {
-  if (bids.length < 3) return [];
+  if (rows.length < 3) return [];
 
-  const values = bids.map((b) => b.unitPr);
+  const values = rows.map((b) => b.amount);
   const sorted = [...values].sort((a, b) => a - b);
 
   const med = quantile(sorted, 0.5);
@@ -35,29 +35,29 @@ export function detectOutliers(
 
   const flags: OutlierFlag[] = [];
 
-  for (const bid of bids) {
+  for (const row of rows) {
     const methods: Array<"iqr" | "mad" | "ratio_to_min"> = [];
 
-    if (iqr > 0 && (bid.unitPr < iqrLow || bid.unitPr > iqrHigh)) {
+    if (iqr > 0 && (row.amount < iqrLow || row.amount > iqrHigh)) {
       methods.push("iqr");
     }
-    if (mad > 0 && Math.abs(bid.unitPr - med) > 3 * mad) {
+    if (mad > 0 && Math.abs(row.amount - med) > 3 * mad) {
       methods.push("mad");
     }
-    if (min > 0 && bid.unitPr > 2 * min) {
+    if (min > 0 && row.amount > 2 * min) {
       methods.push("ratio_to_min");
     }
 
     if (methods.length === 0) continue;
 
-    const deviation: "high" | "low" = bid.unitPr > med ? "high" : "low";
+    const deviation: "high" | "low" = row.amount > med ? "high" : "low";
     flags.push({
-      bidder: bid.bidder,
-      unitPr: bid.unitPr,
+      party: row.party,
+      amount: row.amount,
       deviation,
       methods,
       detail:
-        `unitPr ${bid.unitPr} vs median ${med.toFixed(2)} ` +
+        `amount ${row.amount} vs median ${med.toFixed(2)} ` +
         `(flagged by: ${methods.join(", ")})`,
     });
   }

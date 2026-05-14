@@ -1,6 +1,6 @@
-# Construction Estimating Agent
+# CSV + PDF RAG Agent
 
-A small TypeScript CLI that ingests construction-bid CSV files and PDF plan sets, indexes them for hybrid retrieval, and answers natural-language questions through an LLM tool loop. Every answer carries explicit confidence, groundedness, caveats, and source references.
+A small TypeScript CLI that ingests CSV and PDF files, maps CSV columns to semantic roles, indexes everything for hybrid retrieval, and answers natural-language questions through an LLM tool loop. Every answer carries explicit confidence, groundedness, caveats, and source references. The example data in this repo is construction-bid data, but the system makes no domain-specific assumptions about CSV content.
 
 ## How to run
 
@@ -49,12 +49,12 @@ Commands:
 > /ingest ./data/bids.csv
 Ingested ./data/bids.csv [csv] — 42 chunks.
 Caveats:
-  - Engineer estimate unavailable
+  - Engineer estimate of unit price is zero
   - Unmapped columns: REGION
 
-> Who is the cheapest bidder for ITEM 4040350 in project 0676350?
+> Who has the lowest unit price for ITEM 4040350 in project 0676350?
 {
-  "answer": "Blythe Construction at $93.90 per ton (lowest of 3 bids).",
+  "answer": "Blythe Construction at $93.90 per ton (lowest of 3 rows).",
   "confidence": "high",
   "grounded_in_context": true,
   "data_caveats": [],
@@ -64,32 +64,54 @@ Caveats:
 }
 
 > Please ingest ./data/plans.pdf and summarize any drainage callouts.
-# The agent calls ingestFile, then queryPlanSet, then returns the structured JSON answer.
+# The agent calls ingestFile, then queryPdf, then returns the structured JSON answer.
 ```
 
 Slash commands are handled by the REPL directly. Any non-slash input is sent to the agent — there is no regex pre-routing to guess ingestion intent. If the user asks the agent in plain English to ingest a file, the agent invokes the `ingestFile` tool.
+
+### A non-bid example
+
+The same agent works on any CSV whose columns map to the canonical semantic roles. For a sales-order CSV with headers `customer_id, product, qty, unit_price, total`, the same question shape works:
+
+```
+> /ingest ./data/orders.csv
+Ingested ./data/orders.csv [csv] — 18 chunks.
+
+> Who has the highest unit price for product SKU-1042?
+{
+  "answer": "Acme Corp at $42.50 per unit (3 orders).",
+  "confidence": "high",
+  "grounded_in_context": true,
+  "data_caveats": [],
+  "sources": [
+    { "type": "csv_row", "reference": "csv::orders.csv::SKU-1042" }
+  ]
+}
+```
+
+No code change is required — `customer_id` and `product` both resolve to the `identifier` role, `qty` to `quantity`, `unit_price` to `price`, `total` to `amount`. The tools (`analyzeNumericFields`, `searchDocuments`) read those roles instead of hard-coded field names.
 
 ## Architecture
 
 ```
 src/
-├── types.ts                     — Shared contracts (CsvChunk, PdfChunk, AgentAnswer, …)
-├── schema/csvRow.ts             — Dynamic Zod row schema built from column mappings
+├── types.ts                     — Shared contracts (CsvChunk, PdfChunk, AgentAnswer, FieldRole, …)
+├── schema/csvRow.ts             — Dynamic Zod row schema built from column mappings (numeric ← role)
 ├── ingestion/
-│   ├── columnMapper.ts          — Two-tier (synonym → LLM) header mapping
-│   ├── outliers.ts              — IQR + MAD + ratio-to-min outlier detection
-│   ├── csvIngestor.ts           — Parse → map → validate → group → summarize → flag
+│   ├── columnMapper.ts          — Two-tier (synonym → LLM) mapping over the CanonicalField registry
+│   ├── outliers.ts              — IQR + MAD + ratio-to-min outlier detection (party + amount)
+│   ├── csvIngestor.ts           — Parse → role-map → validate → group by identifiers → summarize → flag
 │   ├── pdfIngestor.ts           — Text-layer extraction, Tesseract OCR fallback
 │   └── ingestor.ts              — Dispatcher + in-memory registry
-├── store/vectorStore.ts         — vectra (in-memory) + wink-bm25 + reciprocal rank fusion
+├── store/vectorStore.ts         — Orama in-memory hybrid index (BM25 + vector)
 ├── tools/
 │   ├── searchDocuments.ts       — Hybrid retrieval over CSV + PDF chunks
-│   ├── analyzeBidItems.ts       — top_n_by_price, outlier_detection, summarize, compare_bidders
-│   ├── queryPlanSet.ts          — PDF-only retrieval with confidence gating
+│   ├── analyzeNumericFields.ts  — top_n_by_amount, outlier_detection, summarize, compare_parties
+│   ├── queryPdf.ts              — PDF-only retrieval with confidence gating
 │   └── ingestFile.ts            — File ingestion exposed as a tool
 ├── agent/
 │   ├── systemPrompt.ts          — Tool-use-first prompt with AgentAnswer JSON contract
-│   └── agent.ts                 — generateText loop with the four tools
+│   └── agent.ts                 — generateText loop with the four tools + runtime schema preface
 ├── repl/repl.ts                 — node:repl with eval hook
 └── index.ts                     — dotenv + env validation + REPL bootstrap
 ```
@@ -99,17 +121,16 @@ Layer responsibilities, in one line each:
 - **types**: stable contracts shared across modules.
 - **schema**: runtime validation built after column mapping.
 - **ingestion**: file → typed chunks, including outliers and confidence.
-- **store**: write + search over chunks (vectra vectors, BM25 keywords, RRF merge).
+- **store**: write + search over chunks via Orama hybrid (BM25 + vector) in one typed index.
 - **tools**: LLM-facing capabilities — small parameter schemas, predictable outputs.
-- **agent**: configures the LLM tool loop; no domain logic.
+- **agent**: configures the LLM tool loop and injects the current CSV schema into the prompt; no domain logic.
 - **repl**: user interaction only; no orchestration.
 
 ## Key decisions
 
 - **Vercel AI SDK for the tool loop.** `generateText` with `tools` already implements the iterate-with-tool-calls loop. No need to hand-roll an orchestration loop, no prompt-engineering tricks to invoke tools. `maxSteps: 10` is the only guardrail.
-- **`vectra` for vector storage.** Pure-JS local index with no server and no native bindings. The index lives in a per-process `os.tmpdir()` folder that is cleaned up on exit, giving effectively in-memory semantics. Embeddings are computed with OpenAI `text-embedding-3-small` and inserted explicitly. Brute-force cosine is fine at the scale of a single-session CLI; LanceDB or a hosted vector DB would be the next step up.
-- **Hybrid BM25 + vector with reciprocal rank fusion.** Vector search alone misses literal identifiers (item numbers, bidder names); BM25 alone misses paraphrases. RRF with `k=60` is the standard, parameter-light way to merge them.
-- **Two-tier column mapping (synonym → LLM).** Real bid CSVs come in countless header dialects. A deterministic synonym table handles the common cases at confidence 1.0; `gpt-4o-mini` handles the rest with an explicit confidence score. Every mapping is recorded in the chunk so downstream code can lower trust on LLM-mapped fields.
+- **`@orama/orama` for hybrid retrieval.** A single native-TS in-memory engine handles both BM25 keyword search and vector similarity behind one typed API, with `mode: "hybrid"` doing normalized weighted fusion (`hybridWeights: { text: 0.5, vector: 0.5 }`) in one call. Vector search alone misses literal identifiers (item numbers, customer IDs); BM25 alone misses paraphrases. Embeddings are computed externally with OpenAI `text-embedding-3-small` and supplied to Orama at insert and query time — no embedding plugin, no server, no native bindings, no temp folder, no transaction lock. `source` and `qualityScore` filters are pushed into the index via `where` rather than a post-filter loop.
+- **Two-tier column mapping (synonym → LLM) over a semantic role registry.** Real CSVs come in countless header dialects. A `CanonicalField` registry pairs each canonical name with a semantic role (`identifier`, `label`, `amount`, `price`, `quantity`, `unit`, `date`, `party`, `rank`, `extra`) and a list of synonyms. The deterministic synonym table handles the common cases at confidence 1.0; `gpt-4o-mini` handles the rest with an explicit confidence score and the role/label registry as context. Every mapping carries its role into downstream chunks so the ingestor, tools, and agent prompt can operate generically rather than on hard-coded field names.
 - **Explicit confidence and caveats on every chunk.** Both CSV and PDF chunks carry `qualityScore`, `confidence`, `groundedness`, and `caveats`/`warnings`. The agent's system prompt requires these to flow through to the final `AgentAnswer`.
 - **`node:repl` for the interface.** Built-in, no CLI framework dependency. Slash commands dispatched in the `eval` hook; everything else goes to the agent.
 - **No caching by design.** Caching would add a third write path and a freshness story. For a single-session CLI those costs aren't worth it.
@@ -118,21 +139,21 @@ Layer responsibilities, in one line each:
 
 ## Limitations
 
-- **In-memory state.** Chunks, the CSV registry, the BM25 index, and the vectra index all reset on every process restart. There is no persistence layer.
-- **Brute-force vector search.** vectra scans every vector on each query. Fine for thousands of chunks; would need an ANN index past tens of thousands.
-- **OCR fallback is coarse.** It renders each page at 2× scale and runs Tesseract. Construction drawings are notoriously hard to OCR; expect low confidence on drawing-heavy PDFs, which is surfaced as a warning.
-- **No re-ranking.** RRF gives a sensible default; a learned re-ranker would do better but is out of scope.
+- **In-memory state.** Chunks, the CSV registry, and the Orama index all reset on every process restart. There is no persistence layer.
+- **Single-process index.** Orama lives in heap and rebuilds on each run. Fine for tens of thousands of chunks; past that, snapshotting (`@orama/plugin-data-persistence`) or moving to a hosted store is the next step.
+- **OCR fallback is coarse.** It renders each page at 2× scale and runs Tesseract. Image-heavy or drawing-style PDFs are notoriously hard to OCR; expect low confidence on those, surfaced as a warning.
+- **No re-ranking.** Orama's hybrid fusion gives a sensible default; a learned re-ranker would do better but is out of scope.
 - **Header-mapping LLM is non-deterministic.** Tier-2 mapping calls a real LLM. Two runs over the same file with unusual headers may produce slightly different mappings. The `tier` and `confidence` fields make this auditable.
-- **Cross-project normalization is not done.** If two CSVs use different units or scales for the same item, they are stored as-is. Downstream comparisons may be off.
-- **Schema inference is shallow.** Numeric fields are a fixed set; new domains would need additions.
+- **Cross-file normalization (e.g., unit conversion, currency, scale) is not done.** If two CSVs use different units or scales for the same identifier, they are stored as-is. Downstream comparisons may be off.
+- **Schema inference is shallow.** Numeric detection is driven by the canonical role (`price`/`amount`/`quantity`/`rank`); columns that fall outside the registry are kept as strings.
 - **REPL file management is minimal.** `/files` lists; there is no `/forget`, no per-file inspection, no chunk dump.
 
 ## Future improvements
 
-- Persistent vector store (point vectra at a stable folder, or swap to LanceDB / a managed vector DB).
-- A learned re-ranker over the top RRF candidates.
-- Better OCR for drawings-heavy PDFs (page segmentation, table extraction, layout-aware models).
-- Cross-project normalization (unit conversion, deflation, geographic adjustment).
+- Persistent search index via `@orama/plugin-data-persistence` (save/load Orama state to disk), or a managed vector DB if the corpus outgrows in-memory.
+- A learned re-ranker over the top hybrid candidates.
+- Better OCR for image-heavy PDFs (page segmentation, table extraction, layout-aware models).
+- Cross-file normalization (unit conversion, deflation, geographic adjustment).
 - Stronger schema inference: data-driven numeric detection, unit recognition, type coercion beyond `z.coerce.number()`.
 - Richer file management in the REPL: `/inspect <path>`, `/forget <path>`, chunk previews.
 - Smarter outlier rationales surfaced to the agent (e.g. "Gamma at $500 is 4.5× the median").

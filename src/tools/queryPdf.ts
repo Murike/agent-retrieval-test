@@ -5,10 +5,10 @@ import type { PdfChunk } from "../types.js";
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.8;
 
-export const queryPlanSet = tool({
+export const queryPdf = tool({
   description:
-    "PDF-only retrieval over ingested plan sheets, specs, and drawings. " +
-    "Use this when the user asks about plans, drawings, specifications, or any page-level PDF content.",
+    "PDF-only retrieval over ingested PDF chunks. " +
+    "Use this when the user asks about PDF content.",
   parameters: z.object({
     topic: z.string().describe("Topic or question to look up in PDFs."),
     requireHighConfidence: z

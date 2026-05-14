@@ -6,7 +6,7 @@ vi.mock("../src/store/vectorStore.js", () => ({
   addChunks: vi.fn(),
 }));
 
-import { queryPlanSet } from "../src/tools/queryPlanSet.js";
+import { queryPdf } from "../src/tools/queryPdf.js";
 import { search } from "../src/store/vectorStore.js";
 
 const toolOpts = { toolCallId: "test", messages: [] };
@@ -32,7 +32,7 @@ function pdfResult(id: string, confidence: number): SearchResult {
   };
 }
 
-describe("queryPlanSet tool", () => {
+describe("queryPdf tool", () => {
   it("excludes low-confidence chunks when requireHighConfidence=true and surfaces a caveat", async () => {
     const mockedSearch = vi.mocked(search);
     mockedSearch.mockResolvedValueOnce([
@@ -40,7 +40,7 @@ describe("queryPlanSet tool", () => {
       pdfResult("pdf::doc::p2", 0.5),
     ]);
 
-    const out = await queryPlanSet.execute!(
+    const out = await queryPdf.execute!(
       { topic: "drainage", requireHighConfidence: true },
       toolOpts,
     );
@@ -62,7 +62,7 @@ describe("queryPlanSet tool", () => {
       pdfResult("pdf::doc::p2", 0.5),
     ]);
 
-    const out = await queryPlanSet.execute!(
+    const out = await queryPdf.execute!(
       { topic: "drainage", requireHighConfidence: true },
       toolOpts,
     );

@@ -7,7 +7,7 @@ function main(): void {
     process.exit(1);
   }
 
-  console.log("Construction Estimating Agent");
+  console.log("CSV + PDF RAG Agent");
   console.log("Type /help for commands, or ask a question.\n");
 
   startRepl();

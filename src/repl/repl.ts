@@ -2,6 +2,7 @@ import repl from "node:repl";
 import type { CoreMessage } from "ai";
 import { ingest, listIngested } from "../ingestion/ingestor.js";
 import { runAgent } from "../agent/agent.js";
+import { ChatHistory } from "../chat/history.js";
 
 function printHelp(): void {
   console.log(
@@ -12,6 +13,7 @@ function printHelp(): void {
       "  /files             list ingested files",
       "  /ingest <path>     ingest a CSV or PDF file",
       "  /reset             clear conversation history",
+      "  /history           show conversation message count",
       "  <free text>        ask the agent a question",
     ].join("\n"),
   );
@@ -68,7 +70,7 @@ async function handleCommand(
 }
 
 export function startRepl(): void {
-  let history: CoreMessage[] = [];
+  const history = new ChatHistory();
 
   const server = repl.start({
     prompt: "> ",
@@ -83,8 +85,14 @@ export function startRepl(): void {
         }
 
         if (line === "/reset") {
-          history = [];
+          history.reset();
           console.log("Conversation history cleared.");
+          callback(null, undefined);
+          return;
+        }
+
+        if (line === "/history") {
+          console.log(`Conversation has ${history.size()} messages.`);
           callback(null, undefined);
           return;
         }
@@ -95,8 +103,11 @@ export function startRepl(): void {
           return;
         }
 
-        const { answer, history: nextHistory } = await runAgent(line, history);
-        history = nextHistory;
+        const { answer, history: nextHistory } = await runAgent(
+          line,
+          history.get(),
+        );
+        history.replace(nextHistory);
         console.log(answer.answer);
         callback(null, undefined);
       } catch (error) {

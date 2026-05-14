@@ -1,39 +1,50 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { LocalIndex } from "vectra";
 import { embed, embedMany } from "ai";
 import { openai } from "@ai-sdk/openai";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-import bm25Factory from "wink-bm25-text-search";
+import {
+  create,
+  insertMultiple,
+  search as oramaSearch,
+} from "@orama/orama";
 import type { StoredChunk, SearchResult } from "../types.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
-const RRF_K = 60;
+// text-embedding-3-small produces 1536-d vectors. Orama bakes the dimension
+// into the schema at create() time, so changing the embedding model requires
+// updating this constant.
+const EMBEDDING_DIM = 1536;
 
-// Vectra writes its index to a folder. Pointing it at a per-process tmpdir
-// gives effectively in-memory semantics: no server, no persistence across runs.
-const indexDir = mkdtempSync(join(tmpdir(), "project-embed-v2-"));
-process.on("exit", () => {
-  try {
-    rmSync(indexDir, { recursive: true, force: true });
-  } catch {
-    // best effort
-  }
-});
+const schema = {
+  id: "string",
+  body: "string",
+  source: "enum",
+  qualityScore: "number",
+  embedding: `vector[${EMBEDDING_DIM}]`,
+} as const;
 
+type Db = ReturnType<typeof create<typeof schema>>;
+
+// Orama stores its own copy of each document but type-erases the metadata
+// union (CsvChunk | PdfChunk). The sidecar Map keeps the typed StoredChunk
+// so SearchResult.chunk preserves its narrow type for downstream consumers.
 const localChunks = new Map<string, StoredChunk>();
-let vectraIndex: LocalIndex | null = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let bm25Engine: any = null;
-let bm25Dirty = true;
+let db: Db | null = null;
 
-async function getIndex(): Promise<LocalIndex> {
-  if (vectraIndex) return vectraIndex;
-  const index = new LocalIndex(indexDir);
-  if (!(await index.isIndexCreated())) await index.createIndex();
-  vectraIndex = index;
-  return index;
+function getDb(): Db {
+  if (db) return db;
+  db = create({
+    schema,
+    components: {
+      // Match the previous wink-bm25 tokenizer so retrieval behavior on
+      // identifier-heavy text (item numbers, project IDs) is unchanged.
+      tokenizer: {
+        language: "english",
+        normalizationCache: new Map<string, string>(),
+        tokenize: (raw: string): string[] =>
+          raw.toLowerCase().match(/[a-z0-9]+/g) ?? [],
+      },
+    },
+  });
+  return db;
 }
 
 // OpenAI's embeddings API rejects empty strings. PDF chunks for blank pages
@@ -48,63 +59,26 @@ function embeddableText(c: StoredChunk): string {
     : "[empty document]";
 }
 
-// vectra's beginUpdate/endUpdate transaction is non-reentrant. The agent
-// may dispatch ingestFile calls in parallel, so we serialize addChunks
-// behind a single promise chain.
-let writeQueue: Promise<void> = Promise.resolve();
-
 export async function addChunks(chunks: StoredChunk[]): Promise<void> {
   if (chunks.length === 0) return;
 
-  const run = async (): Promise<void> => {
-    const { embeddings } = await embedMany({
-      model: openai.embedding(EMBEDDING_MODEL),
-      values: chunks.map(embeddableText),
-    });
+  const { embeddings } = await embedMany({
+    model: openai.embedding(EMBEDDING_MODEL),
+    values: chunks.map(embeddableText),
+  });
 
-    const index = await getIndex();
-    await index.beginUpdate();
-    try {
-      for (let i = 0; i < chunks.length; i++) {
-        const c = chunks[i];
-        await index.insertItem({
-          id: c.id,
-          vector: embeddings[i],
-          metadata: {
-            source: c.source,
-            qualityScore: c.metadata.qualityScore,
-          },
-        });
-      }
-    } finally {
-      await index.endUpdate();
-    }
+  await insertMultiple(
+    getDb(),
+    chunks.map((c, i) => ({
+      id: c.id,
+      body: c.document,
+      source: c.source,
+      qualityScore: c.metadata.qualityScore,
+      embedding: embeddings[i],
+    })),
+  );
 
-    for (const c of chunks) localChunks.set(c.id, c);
-    bm25Dirty = true;
-  };
-
-  // Chain onto the queue, but isolate failures so one bad call doesn't
-  // poison subsequent ones.
-  const next = writeQueue.then(run, run);
-  writeQueue = next.catch(() => undefined);
-  return next;
-}
-
-// wink-bm25 requires `consolidate()` before search and does not allow adding
-// docs after consolidation, so we rebuild lazily whenever the store changed.
-function rebuildBm25(): void {
-  const engine = bm25Factory();
-  engine.defineConfig({ fldWeights: { body: 1 } });
-  engine.definePrepTasks([
-    (text: string): string[] => text.toLowerCase().match(/[a-z0-9]+/g) ?? [],
-  ]);
-  for (const [id, c] of localChunks) {
-    engine.addDoc({ body: c.document }, id);
-  }
-  engine.consolidate();
-  bm25Engine = engine;
-  bm25Dirty = false;
+  for (const c of chunks) localChunks.set(c.id, c);
 }
 
 export interface SearchOpts {
@@ -123,48 +97,31 @@ export async function search(
   const source = opts.source ?? "both";
   const minQ = opts.minQualityScore ?? 0;
 
-  if (bm25Dirty) rebuildBm25();
-
-  // BM25 ranked list — array of [id, score].
-  const bm25Raw = bm25Engine.search(query) as Array<[string, number]>;
-  const bm25Ranks = new Map<string, number>();
-  bm25Raw.forEach(([id], idx) => bm25Ranks.set(id, idx + 1));
-
-  // Vector ranked list from vectra.
   const { embedding: queryVector } = await embed({
     model: openai.embedding(EMBEDDING_MODEL),
     value: query,
   });
-  const index = await getIndex();
-  const nResults = Math.min(localChunks.size, Math.max(topK * 4, 10));
-  const vectorRes = await index.queryItems(queryVector, "", nResults);
-  const vectorRanks = new Map<string, number>();
-  vectorRes.forEach((r, idx) => vectorRanks.set(r.item.id, idx + 1));
 
-  // Reciprocal rank fusion.
-  const allIds = new Set<string>([
-    ...bm25Ranks.keys(),
-    ...vectorRanks.keys(),
-  ]);
-  const fused: Array<{ id: string; score: number }> = [];
-  for (const id of allIds) {
-    const b = bm25Ranks.get(id);
-    const v = vectorRanks.get(id);
-    const score =
-      (b ? 1 / (RRF_K + b) : 0) + (v ? 1 / (RRF_K + v) : 0);
-    fused.push({ id, score });
-  }
-  fused.sort((a, b) => b.score - a.score);
+  const res = await oramaSearch(getDb(), {
+    mode: "hybrid",
+    term: query,
+    vector: { value: queryVector, property: "embedding" },
+    // Default similarity (0.8) discards anything mildly off-topic; lowering
+    // it lets the BM25 side carry results that vectors alone would drop.
+    similarity: 0,
+    hybridWeights: { text: 0.5, vector: 0.5 },
+    limit: topK,
+    where: {
+      ...(source !== "both" ? { source: { eq: source } } : {}),
+      ...(minQ > 0 ? { qualityScore: { gte: minQ } } : {}),
+    },
+  });
 
-  // Materialize + filter, stop once we have topK.
   const results: SearchResult[] = [];
-  for (const { id, score } of fused) {
-    const chunk = localChunks.get(id);
+  for (const hit of res.hits) {
+    const chunk = localChunks.get(String(hit.id));
     if (!chunk) continue;
-    if (source !== "both" && chunk.source !== source) continue;
-    if (chunk.metadata.qualityScore < minQ) continue;
-    results.push({ chunk, score });
-    if (results.length >= topK) break;
+    results.push({ chunk, score: hit.score });
   }
   return results;
 }
