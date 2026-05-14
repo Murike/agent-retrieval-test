@@ -30,20 +30,18 @@ function buildSchemaPreface(): string {
   return `Currently ingested CSV columns (semantic roles):\n${lines.join("\n")}`;
 }
 
-function buildPrompt(userQuery: string): string {
+function buildSystemAppendix(): string {
   const files = listIngested();
   if (files.length === 0) {
-    return `No files have been ingested yet.\n\nUser question: ${userQuery}`;
+    return "No files have been ingested yet.";
   }
   const lines = files
     .map((f) => `- ${f.path} (${f.type}, ${f.chunkCount} chunks)`)
     .join("\n");
   const schemaPreface = buildSchemaPreface();
-  const schemaBlock = schemaPreface ? `${schemaPreface}\n\n` : "";
+  const schemaBlock = schemaPreface ? `\n\n${schemaPreface}` : "";
   return `Currently ingested files (already loaded — do not ask the user to provide them again, just query them with the available tools):
-${lines}
-
-${schemaBlock}User question: ${userQuery}`;
+${lines}${schemaBlock}`;
 }
 
 const AgentAnswerSchema = z.object({
@@ -75,12 +73,14 @@ export async function runAgent(
 ): Promise<{ answer: AgentAnswer; history: CoreMessage[] }> {
   const userMessage: CoreMessage = {
     role: "user",
-    content: buildPrompt(userQuery),
+    content: userQuery,
   };
+  const appendix = buildSystemAppendix();
+  const systemPrompt = appendix ? `${SYSTEM_PROMPT}\n\n${appendix}` : SYSTEM_PROMPT;
   const result = await generateText({
     model: openai("gpt-4o"),
     maxSteps: 10,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     tools: {
       ingestFile,
       searchDocuments,
