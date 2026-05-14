@@ -184,6 +184,13 @@ export const analyzeNumericFields = tool({
     }
 
     if (operation === "top_n_groups") {
+      type PartyEntry = {
+        party: string;
+        price: number;
+        lineTotal: number;
+        quantity: number;
+        rank: number | null;
+      };
       type GroupResult = {
         identifiers: Record<string, string>;
         label: string;
@@ -192,14 +199,10 @@ export const analyzeNumericFields = tool({
         aggregate: typeof aggregate;
         on: typeof on;
         aggregateValue: number;
+        primary: PartyEntry | null;
         quantity: number | null;
         priceRange: { min: number; max: number } | null;
-        parties: Array<{
-          party: string;
-          price: number;
-          lineTotal: number;
-          quantity: number;
-        }>;
+        parties: PartyEntry[];
       };
 
       const groups: GroupResult[] = chunks.map((c) => {
@@ -209,6 +212,7 @@ export const analyzeNumericFields = tool({
         const amountCol = firstMappingByRole(c.columnMappings, "amount");
         const qtyCol = firstMappingByRole(c.columnMappings, "quantity");
         const partyCol = firstMappingByRole(c.columnMappings, "party");
+        const rankCol = firstMappingByRole(c.columnMappings, "rank");
 
         const targetValues = targetCol
           ? c.rows
@@ -231,19 +235,35 @@ export const analyzeNumericFields = tool({
               targetValues.reduce((a, b) => a + b, 0) / targetValues.length;
         }
 
-        const partiesArr = c.rows
-          .map((r) => ({
-            party: partyCol ? (r[partyCol.mappedName] ?? "") : "",
-            price: priceCol ? parseNum(r[priceCol.mappedName]) : NaN,
-            lineTotal: amountCol ? parseNum(r[amountCol.mappedName]) : NaN,
-            quantity: qtyCol ? parseNum(r[qtyCol.mappedName]) : NaN,
-          }))
+        const partiesArr: PartyEntry[] = c.rows
+          .map((r) => {
+            const rawRank = rankCol ? parseNum(r[rankCol.mappedName]) : NaN;
+            return {
+              party: partyCol ? (r[partyCol.mappedName] ?? "") : "",
+              price: priceCol ? parseNum(r[priceCol.mappedName]) : NaN,
+              lineTotal: amountCol ? parseNum(r[amountCol.mappedName]) : NaN,
+              quantity: qtyCol ? parseNum(r[qtyCol.mappedName]) : NaN,
+              rank: Number.isFinite(rawRank) ? rawRank : null,
+            };
+          })
           .filter((p) => p.party)
           .sort((a, b) => {
+            if (rankCol) {
+              const av = a.rank ?? Infinity;
+              const bv = b.rank ?? Infinity;
+              return av - bv;
+            }
             const av = Number.isFinite(a.price) ? a.price : Infinity;
             const bv = Number.isFinite(b.price) ? b.price : Infinity;
             return av - bv;
           });
+
+        // When a rank-role column exists, parties[0] is the row the data
+        // designates as primary (e.g., the rank-1 bid). Expose it explicitly
+        // so the answer can use the winner's values instead of a column-wise
+        // aggregate that may pick a different row.
+        const primary: PartyEntry | null =
+          rankCol && partiesArr[0] ? partiesArr[0] : null;
 
         // Hoist quantity to the group level — for bid data, every party
         // bids the same quantity for the same line item. Take the first
@@ -275,16 +295,30 @@ export const analyzeNumericFields = tool({
           aggregate,
           on,
           aggregateValue,
+          primary,
           quantity: groupQuantity,
           priceRange,
           parties: partiesArr,
         };
       });
 
+      // When primary is present (rank-aware data), rank groups by the
+      // primary row's value on the target field — otherwise a per-line
+      // min/max aggregate can outrank the dataset's own winner row.
+      const sortKey = (g: GroupResult): number => {
+        if (g.primary) {
+          const v =
+            on === "price"
+              ? g.primary.price
+              : on === "amount"
+                ? g.primary.lineTotal
+                : g.primary.quantity;
+          if (Number.isFinite(v)) return v;
+        }
+        return g.aggregateValue;
+      };
       const sorted = groups.sort((a, b) =>
-        direction === "desc"
-          ? b.aggregateValue - a.aggregateValue
-          : a.aggregateValue - b.aggregateValue,
+        direction === "desc" ? sortKey(b) - sortKey(a) : sortKey(a) - sortKey(b),
       );
 
       return {

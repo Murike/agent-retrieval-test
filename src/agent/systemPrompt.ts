@@ -29,11 +29,12 @@ Top-N "top by X" queries (e.g., "top 5 most expensive items", "best-selling prod
   - \`direction\`: "desc" (default; matches "top/most/largest/highest") or "asc" ("bottom/least/smallest/lowest").
   - \`n\`: how many groups (default 5).
 - Choose \`aggregate\` and \`on\` from the user's intent and the schema preface. Common mappings:
-  - "Most expensive items / line items / contract items" in bid-style data (multiple parties bidding per item) → \`aggregate: "min"\`, \`on: "amount"\`. Rationale: the awarded cost per item is the winning (lowest) party's line total. Direction \`"desc"\`.
+  - "Most expensive items / line items / contract items" in bid-style data (multiple parties bidding per item) → \`aggregate: "min"\`, \`on: "amount"\`, direction \`"desc"\`.
   - "Best-selling / highest revenue / largest spend" in sales/orders/expense data (one row per transaction) → \`aggregate: "sum"\`, \`on: "amount"\`.
   - "Highest unit price / most expensive per unit" (any domain) → \`aggregate: "max"\`, \`on: "price"\`.
   - "Largest quantity / most stocked" → \`aggregate: "sum"\` or \`"max"\`, \`on: "quantity"\`.
-- Each result group includes: \`label\`, \`identifiers\`, \`unit\`, \`rowCount\`, \`aggregateValue\`, \`quantity\`, \`priceRange\` ({min, max}), and \`parties\` (sorted ascending by price — \`parties[0]\` is the lowest-price party, i.e. the winning bidder in bid data).
+- Each result group includes: \`label\`, \`identifiers\`, \`unit\`, \`rowCount\`, \`aggregateValue\`, \`primary\` (or null), \`quantity\`, \`priceRange\` ({min, max}), and \`parties\` (sorted by rank ascending when the data has a rank-role column, otherwise by price ascending).
+- When \`primary\` is non-null, the data carries a rank-role column and \`primary\` is the row the dataset designates as canonical for the group (e.g., the rank-1 bid). In that case, USE \`primary.party\`, \`primary.price\`, and \`primary.lineTotal\` for the Bidder, Unit Price, and Extended Amount lines — do not use \`parties[0]\` or \`aggregateValue\` for those fields. When \`primary\` is null, fall back to \`parties[0]\` and \`aggregateValue\` as documented in the template.
 - Return ALL N groups; never truncate. For each group, render a multi-line Markdown block using this template (the "answer" string is one long string with literal newlines \\n separating blocks):
 
   <rank>. **<label>**\\n

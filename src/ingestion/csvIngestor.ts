@@ -11,6 +11,57 @@ import type {
   OutlierFlag,
 } from "../types.js";
 
+// Fraction of rows where this column carries usable signal. For numeric roles,
+// a value is "live" if it parses to a finite non-zero number; for everything
+// else, any non-empty string counts. Drives prioritizeMappings.
+function livenessScore(
+  mapping: ColumnMapping,
+  rows: Record<string, string>[],
+): number {
+  if (rows.length === 0 || mapping.tier === "unmapped") return 0;
+  const numeric = isNumericRole(mapping.role);
+  let live = 0;
+  for (const r of rows) {
+    const v = r[mapping.mappedName];
+    if (v === undefined || v === "") continue;
+    if (numeric) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n === 0) continue;
+    }
+    live++;
+  }
+  return live / rows.length;
+}
+
+// When two columns share the same role (e.g. ENG_EST_UNIT_PR + UNIT_PR both
+// role "price"), firstMappingByRole returns the first by header order — which
+// can be the all-zero "estimate" sibling of the real column. Reorder within
+// each role by descending liveness so the populated column wins; preserve the
+// original cross-role positions so unrelated callers see the same layout.
+function prioritizeMappings(
+  mappings: ColumnMapping[],
+  rows: Record<string, string>[],
+): ColumnMapping[] {
+  const byRole = new Map<FieldRole, ColumnMapping[]>();
+  for (const m of mappings) {
+    const arr = byRole.get(m.role);
+    if (arr) arr.push(m);
+    else byRole.set(m.role, [m]);
+  }
+  for (const [, arr] of byRole) {
+    const scored = arr.map((m, i) => ({ m, i, live: livenessScore(m, rows) }));
+    scored.sort((a, b) => b.live - a.live || a.i - b.i);
+    arr.splice(0, arr.length, ...scored.map((s) => s.m));
+  }
+  const cursors = new Map<FieldRole, number>();
+  return mappings.map((m) => {
+    const arr = byRole.get(m.role)!;
+    const i = cursors.get(m.role) ?? 0;
+    cursors.set(m.role, i + 1);
+    return arr[i];
+  });
+}
+
 interface RawRow {
   [key: string]: string;
 }
@@ -176,11 +227,19 @@ export async function ingestCsv(filePath: string): Promise<CsvChunk[]> {
   if (rawRows.length === 0) return [];
 
   const rawHeaders = parsed.meta.fields ?? Object.keys(rawRows[0]);
-  const { mappings, unmapped } = await mapColumns(rawHeaders);
-  const schema = buildRowSchema(mappings);
+  const { mappings: rawMappings, unmapped } = await mapColumns(rawHeaders);
+  const schema = buildRowSchema(rawMappings);
 
   const processed: ProcessedRow[] = rawRows.map((r) =>
-    processRow(r, mappings, schema),
+    processRow(r, rawMappings, schema),
+  );
+
+  // Re-rank mappings within each role by how populated the column actually
+  // is, so firstMappingByRole returns the column carrying signal when two
+  // share a role (e.g. an estimate column next to the real price column).
+  const mappings = prioritizeMappings(
+    rawMappings,
+    processed.map((p) => p.row),
   );
 
   // Group by concatenation of all identifier-role column values.
