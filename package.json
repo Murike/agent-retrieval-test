@@ -14,13 +14,12 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.0.0",
+    "@orama/orama": "^3.1.18",
     "ai": "^4.0.0",
     "dotenv": "^16.4.0",
     "papaparse": "^5.4.0",
     "pdfjs-dist": "^4.5.0",
     "tesseract.js": "^5.1.0",
-    "vectra": "^0.11.1",
-    "wink-bm25-text-search": "^3.1.0",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
