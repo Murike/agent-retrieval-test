@@ -17,13 +17,12 @@
     "@orama/orama": "^3.1.18",
     "ai": "^4.0.0",
     "dotenv": "^16.4.0",
+    "execa": "^9.6.1",
     "papaparse": "^5.4.0",
+    "pdf-to-img": "^6.0.0",
     "pdfjs-dist": "^4.5.0",
     "tesseract.js": "^5.1.0",
     "zod": "^3.23.0"
-  },
-  "optionalDependencies": {
-    "canvas": "^2.11.2"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

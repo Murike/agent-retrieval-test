@@ -18,16 +18,14 @@ npm run dev
 
 `npm run build` produces a JavaScript build in `dist/`; `npm start` runs it. `npm test` runs the vitest suite. `npm run typecheck` runs `tsc --noEmit`.
 
-### Optional: `canvas` for PDF OCR
+### Recommended: install `ocrmypdf` for fast OCR
 
-`canvas` (used to rasterize PDF pages for the OCR fallback on scanned PDFs) is a native module and is declared as an **optional dependency**. If its build fails, `npm install` will still succeed and the rest of the system works normally — PDF pages without a text layer will be emitted as low-confidence chunks with a warning instead of being OCR'd.
+PDF pages without a usable text layer are OCR'd. The primary OCR path shells out to `ocrmypdf`, which wraps native Tesseract with deskew/clean preprocessing and is dramatically faster than the pure-JS fallback. Install it once at the OS level:
 
-To enable OCR, install the system libraries and reinstall:
+- Linux: `sudo apt install -y ocrmypdf`
+- macOS: `brew install ocrmypdf`
 
-- Linux: `sudo apt install -y libpixman-1-dev libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev build-essential`
-- macOS: `brew install pkg-config cairo pango libpng jpeg giflib librsvg pixman`
-
-Then `npm install` again — `canvas` will build and OCR will work end-to-end.
+If `ocrmypdf` isn't on `PATH`, the system transparently falls back to a pure-Node pipeline (`pdf-to-img` rasterization + `tesseract.js` OCR). The fallback works everywhere Node runs — no extra system libraries — but is several times slower per page. You'll see a one-time `[pdf] ocrmypdf not found on PATH …` warning when it kicks in.
 
 ## Environment variables
 
