@@ -96,7 +96,7 @@ Capabilities are exposed as five tools with Zod parameter schemas — `ingestFil
 - **No persistence by design** — single-session CLI; persistence adds freshness/migration costs not warranted by the assignment scope.
 - **No DI containers, no repository wrappers.** Tests mock at module boundaries with `vi.mock`.
 
-## Some things that can be improved
+## Areas of improvement
 
 - **Adaptive hybrid weights** — bump BM25 when the query has long digit runs (`/\d{4,}/`); bump vector for prose.
 - **Cross-page PDF re-chunking** — current splitter is intra-page only; paragraph-aware chunks spanning pages (with `pageRange: [start, end]`) would help long flowing specs.
