@@ -98,15 +98,18 @@ async function ocrViaOcrmypdf(
 ): Promise<PdfChunk[]> {
   const workDir = mkdtempSync(path.join(tmpdir(), "ocrmypdf-"));
   const outPath = path.join(workDir, "out.pdf");
+  const startedAt = Date.now();
+  console.log(`[pdf] ${fileBase}: running ocrmypdf on ${targets.length} page(s)…`);
   try {
-    await execa("ocrmypdf", [
-      "--skip-text",
-      "--output-type",
-      "pdf",
-      "--quiet",
-      filePath,
-      outPath,
-    ], { stdio: 'inherit' });
+    await execa(
+      "ocrmypdf",
+      ["--skip-text", "--output-type", "pdf", filePath, outPath],
+      { stdio: "inherit" },
+    );
+    const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(
+      `[pdf] ${fileBase}: ocrmypdf done in ${elapsedSec} s (${targets.length} page(s))`,
+    );
 
     const buf = await readFile(outPath);
     const doc = await loadDoc(new Uint8Array(buf));
@@ -148,12 +151,19 @@ async function ocrViaFallback(
 ): Promise<PdfChunk[]> {
   const needed = new Map(targets.map((t) => [t.pageNum, t.fallbackText]));
   const chunks: PdfChunk[] = [];
+  const startedAt = Date.now();
+  console.log(
+    `[pdf] ${fileBase}: running pdf-to-img + tesseract.js fallback on ${targets.length} page(s)…`,
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let pdfToImg: any;
   try {
     pdfToImg = await import("pdf-to-img");
   } catch (err) {
+    console.warn(
+      `[pdf] ${fileBase}: pdf-to-img import failed (${err instanceof Error ? err.message : String(err)}); emitting low-confidence text-layer chunks for ${targets.length} page(s)`,
+    );
     return targets.flatMap((t) => emitFailedChunks(fileBase, t, err));
   }
 
@@ -206,6 +216,10 @@ async function ocrViaFallback(
       ...emitFailedChunks(fileBase, { pageNum, fallbackText }, new Error("page not rendered")),
     );
   }
+  const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+  console.log(
+    `[pdf] ${fileBase}: fallback OCR done in ${elapsedSec} s (${targets.length} page(s))`,
+  );
   return chunks;
 }
 
@@ -250,6 +264,9 @@ export async function ingestPdf(filePath: string): Promise<PdfChunk[]> {
   }
 
   if (ocrTargets.length > 0) {
+    console.log(
+      `[pdf] ${fileBase}: ${ocrTargets.length} of ${doc.numPages} page(s) need OCR`,
+    );
     let ocrChunks: PdfChunk[] | null = null;
     if (await hasOcrmypdf()) {
       try {
