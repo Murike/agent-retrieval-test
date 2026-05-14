@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TypeScript CLI RAG agent for construction estimating",
+  "description": "TypeScript CLI RAG agent over CSV and PDF data with semantic column mapping",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",

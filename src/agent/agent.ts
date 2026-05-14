@@ -3,11 +3,32 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { searchDocuments } from "../tools/searchDocuments.js";
-import { analyzeBidItems } from "../tools/analyzeBidItems.js";
-import { queryPlanSet } from "../tools/queryPlanSet.js";
+import { analyzeNumericFields } from "../tools/analyzeNumericFields.js";
+import { queryPdf } from "../tools/queryPdf.js";
 import { ingestFile } from "../tools/ingestFile.js";
-import { listIngested } from "../ingestion/ingestor.js";
-import type { AgentAnswer } from "../types.js";
+import { listIngested, getAllCsvChunks } from "../ingestion/ingestor.js";
+import type { AgentAnswer, ColumnMapping } from "../types.js";
+
+function buildSchemaPreface(): string {
+  const chunks = getAllCsvChunks();
+  if (chunks.length === 0) return "";
+
+  // Aggregate columnMappings across chunks. Use mappedName as the key so the
+  // same canonical field reported by multiple chunks collapses to one entry.
+  const byName = new Map<string, ColumnMapping>();
+  for (const c of chunks) {
+    for (const m of c.columnMappings) {
+      if (m.tier === "unmapped") continue;
+      if (!byName.has(m.mappedName)) byName.set(m.mappedName, m);
+    }
+  }
+  if (byName.size === 0) return "";
+
+  const lines = Array.from(byName.values()).map(
+    (m) => `- ${m.mappedName} (${m.role}): ${m.semanticLabel}`,
+  );
+  return `Currently ingested CSV columns (semantic roles):\n${lines.join("\n")}`;
+}
 
 function buildPrompt(userQuery: string): string {
   const files = listIngested();
@@ -17,10 +38,12 @@ function buildPrompt(userQuery: string): string {
   const lines = files
     .map((f) => `- ${f.path} (${f.type}, ${f.chunkCount} chunks)`)
     .join("\n");
+  const schemaPreface = buildSchemaPreface();
+  const schemaBlock = schemaPreface ? `${schemaPreface}\n\n` : "";
   return `Currently ingested files (already loaded — do not ask the user to provide them again, just query them with the available tools):
 ${lines}
 
-User question: ${userQuery}`;
+${schemaBlock}User question: ${userQuery}`;
 }
 
 const AgentAnswerSchema = z.object({
@@ -54,8 +77,8 @@ export async function runAgent(userQuery: string): Promise<AgentAnswer> {
     tools: {
       ingestFile,
       searchDocuments,
-      analyzeBidItems,
-      queryPlanSet,
+      analyzeNumericFields,
+      queryPdf,
     },
     prompt: buildPrompt(userQuery),
   });

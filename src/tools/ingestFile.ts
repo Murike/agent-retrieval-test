@@ -6,7 +6,7 @@ export const ingestFile = tool({
   description:
     "Ingest a CSV or PDF file from a local path into the searchable chunk store. " +
     "Use this when the user asks to load, ingest, or import a file. " +
-    "Returns the file record and any caveats from ingestion (unmapped columns, missing engineer estimates, low-confidence OCR pages, etc.).",
+    "Returns the file record and any caveats from ingestion (unmapped columns, zero-value price columns, low-confidence OCR pages, etc.).",
   parameters: z.object({
     path: z.string().describe("Local filesystem path to a .csv or .pdf file."),
   }),

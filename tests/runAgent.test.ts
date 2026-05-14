@@ -6,10 +6,10 @@ vi.mock("ai", async () => {
     ...actual,
     generateText: vi.fn(async () => ({
       text: JSON.stringify({
-        answer: "Cheapest bid for ITEM 100 is Alpha at $100.",
+        answer: "Lowest amount for identifier 100 is Alpha at $100.",
         confidence: "high",
         grounded_in_context: true,
-        data_caveats: ["Engineer estimate unavailable"],
+        data_caveats: ["Unit price is zero"],
         sources: [{ type: "csv_row", reference: "csv::file::P1::100" }],
       }),
     })),
@@ -25,7 +25,7 @@ describe("runAgent end-to-end", () => {
     expect(answer.answer).toContain("Alpha");
     expect(answer.confidence).toBe("high");
     expect(answer.grounded_in_context).toBe(true);
-    expect(answer.data_caveats).toContain("Engineer estimate unavailable");
+    expect(answer.data_caveats).toContain("Unit price is zero");
     expect(answer.sources).toHaveLength(1);
     expect(answer.sources[0]).toEqual({
       type: "csv_row",
