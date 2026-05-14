@@ -6,6 +6,7 @@ import { searchDocuments } from "../tools/searchDocuments.js";
 import { analyzeNumericFields } from "../tools/analyzeNumericFields.js";
 import { queryPdf } from "../tools/queryPdf.js";
 import { ingestFile } from "../tools/ingestFile.js";
+import { compare } from "../tools/compare.js";
 import { listIngested, getAllCsvChunks } from "../ingestion/ingestor.js";
 import type { AgentAnswer, ColumnMapping } from "../types.js";
 
@@ -86,6 +87,7 @@ export async function runAgent(
       searchDocuments,
       analyzeNumericFields,
       queryPdf,
+      compare,
     },
     messages: [...history, userMessage],
   });
