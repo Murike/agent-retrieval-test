@@ -4,6 +4,7 @@ import Papa from "papaparse";
 import { mapColumns } from "./columnMapper.js";
 import { buildRowSchema, isNumericRole } from "../schema/csvRow.js";
 import { detectOutliers } from "./outliers.js";
+import { groupByIdentifier, groupByRowWindow } from "../chunking/csv.js";
 import type {
   ColumnMapping,
   CsvChunk,
@@ -242,31 +243,17 @@ export async function ingestCsv(filePath: string): Promise<CsvChunk[]> {
     processed.map((p) => p.row),
   );
 
-  // Group by concatenation of all identifier-role column values.
-  // If no identifier-role columns exist, emit a single chunk for the whole file.
+  // Chunking decision — see src/chunking/csv.ts and src/chunking/config.ts.
+  // With identifier-role columns: one chunk per identifier tuple
+  // (e.g., one chunk per PROJ_ID::ITEM_NO).
+  // Without: fixed-row windows of CSV_MAX_ROWS_PER_CHUNK rows each.
   const identifierColumns = mappingsByRole(mappings, "identifier");
-
-  const groups = new Map<
-    string,
-    { identifierValues: string[]; rows: ProcessedRow[] }
-  >();
-
-  if (identifierColumns.length === 0) {
-    groups.set("", { identifierValues: [], rows: processed });
-  } else {
-    for (const p of processed) {
-      const identifierValues = identifierColumns.map(
-        (c) => p.row[c.mappedName] ?? "",
-      );
-      const key = identifierValues.join("::");
-      let g = groups.get(key);
-      if (!g) {
-        g = { identifierValues, rows: [] };
-        groups.set(key, g);
-      }
-      g.rows.push(p);
-    }
-  }
+  const groups =
+    identifierColumns.length === 0
+      ? groupByRowWindow(processed)
+      : groupByIdentifier(processed, (p) =>
+          identifierColumns.map((c) => p.row[c.mappedName] ?? ""),
+        );
 
   const fileBase = path.basename(filePath);
   const partyCol = firstMappingByRole(mappings, "party");

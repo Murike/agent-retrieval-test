@@ -48,6 +48,9 @@ export interface CsvChunk {
 export interface PdfChunk {
   id: string;
   pageNum: number;
+  // Segment index within the page. Pages whose text fits in one chunk
+  // emit segment 0; longer pages are split (see src/chunking/pdf.ts).
+  segment?: number;
   text: string;
   method: "text_layer" | "ocr";
   qualityScore: number;

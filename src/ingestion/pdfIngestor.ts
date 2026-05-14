@@ -6,6 +6,7 @@ import { execa } from "execa";
 // Legacy build is the Node-compatible entrypoint for pdfjs-dist.
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createWorker } from "tesseract.js";
+import { splitPageText } from "../chunking/pdf.js";
 import type { PdfChunk } from "../types.js";
 
 const MIN_TEXT_LENGTH = 50;
@@ -68,6 +69,25 @@ async function extractPageText(
   return joinPageText(textContent);
 }
 
+// Single emission point for PdfChunks. Routes every page's text through the
+// chunking decision in src/chunking/pdf.ts so split behavior is uniform
+// across the text-layer path, ocrmypdf, the pdf-to-img fallback, and the
+// failed-OCR shim. Returns one chunk per segment.
+function makePdfChunks(
+  fileBase: string,
+  pageNum: number,
+  text: string,
+  rest: Omit<PdfChunk, "id" | "pageNum" | "segment" | "text">,
+): PdfChunk[] {
+  return splitPageText(text, pageNum).map((seg) => ({
+    id: `pdf::${fileBase}::p${seg.pageNum}::s${seg.segment}`,
+    pageNum: seg.pageNum,
+    segment: seg.segment,
+    text: seg.text,
+    ...rest,
+  }));
+}
+
 // Primary OCR: rewrite the whole file once with ocrmypdf --skip-text, then
 // pull text for the pages that needed OCR via pdfjs. ocrmypdf only OCRs pages
 // without an existing text layer, so we don't redo work for hybrid PDFs.
@@ -101,16 +121,15 @@ async function ocrViaOcrmypdf(
           "Page yielded little text after OCR — may be image-only or unsupported layout",
         );
       }
-      chunks.push({
-        id: `pdf::${fileBase}::p${pageNum}`,
-        pageNum,
-        text: finalText,
-        method: "ocr",
-        qualityScore: OCRMYPDF_CONFIDENCE,
-        groundedness: "direct",
-        confidence: OCRMYPDF_CONFIDENCE,
-        warnings,
-      });
+      chunks.push(
+        ...makePdfChunks(fileBase, pageNum, finalText, {
+          method: "ocr",
+          qualityScore: OCRMYPDF_CONFIDENCE,
+          groundedness: "direct",
+          confidence: OCRMYPDF_CONFIDENCE,
+          warnings,
+        }),
+      );
     }
     return chunks;
   } finally {
@@ -135,7 +154,7 @@ async function ocrViaFallback(
   try {
     pdfToImg = await import("pdf-to-img");
   } catch (err) {
-    return targets.map((t) => emitFailedChunk(fileBase, t, err));
+    return targets.flatMap((t) => emitFailedChunks(fileBase, t, err));
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,22 +177,21 @@ async function ocrViaFallback(
       if (ocrConfidence < LOW_OCR_CONFIDENCE) {
         warnings.push("Low OCR confidence — content may be inaccurate");
       }
-      chunks.push({
-        id: `pdf::${fileBase}::p${pageNum}`,
-        pageNum,
-        text: ocrText || fallbackText,
-        method: "ocr",
-        qualityScore: ocrConfidence,
-        groundedness: "direct",
-        confidence: ocrConfidence,
-        warnings,
-      });
+      chunks.push(
+        ...makePdfChunks(fileBase, pageNum, ocrText || fallbackText, {
+          method: "ocr",
+          qualityScore: ocrConfidence,
+          groundedness: "direct",
+          confidence: ocrConfidence,
+          warnings,
+        }),
+      );
       needed.delete(pageNum);
     }
   } catch (err) {
     for (const [pageNum, fallbackText] of needed) {
       chunks.push(
-        emitFailedChunk(fileBase, { pageNum, fallbackText }, err),
+        ...emitFailedChunks(fileBase, { pageNum, fallbackText }, err),
       );
       needed.delete(pageNum);
     }
@@ -185,28 +203,25 @@ async function ocrViaFallback(
   // low-confidence chunk so they aren't silently dropped from the index.
   for (const [pageNum, fallbackText] of needed) {
     chunks.push(
-      emitFailedChunk(fileBase, { pageNum, fallbackText }, new Error("page not rendered")),
+      ...emitFailedChunks(fileBase, { pageNum, fallbackText }, new Error("page not rendered")),
     );
   }
   return chunks;
 }
 
-function emitFailedChunk(
+function emitFailedChunks(
   fileBase: string,
   target: OcrTarget,
   err: unknown,
-): PdfChunk {
+): PdfChunk[] {
   const detail = err instanceof Error ? err.message : String(err);
-  return {
-    id: `pdf::${fileBase}::p${target.pageNum}`,
-    pageNum: target.pageNum,
-    text: target.fallbackText,
+  return makePdfChunks(fileBase, target.pageNum, target.fallbackText, {
     method: "text_layer",
     qualityScore: OCR_FAILED_CONFIDENCE,
     groundedness: "direct",
     confidence: OCR_FAILED_CONFIDENCE,
     warnings: [`OCR fallback failed: ${detail}`],
-  };
+  });
 }
 
 export async function ingestPdf(filePath: string): Promise<PdfChunk[]> {
@@ -220,16 +235,15 @@ export async function ingestPdf(filePath: string): Promise<PdfChunk[]> {
   for (let i = 1; i <= doc.numPages; i++) {
     const text = await extractPageText(doc, i);
     if (text.length >= MIN_TEXT_LENGTH) {
-      chunks.push({
-        id: `pdf::${fileBase}::p${i}`,
-        pageNum: i,
-        text,
-        method: "text_layer",
-        qualityScore: 1.0,
-        groundedness: "direct",
-        confidence: 1.0,
-        warnings: [],
-      });
+      chunks.push(
+        ...makePdfChunks(fileBase, i, text, {
+          method: "text_layer",
+          qualityScore: 1.0,
+          groundedness: "direct",
+          confidence: 1.0,
+          warnings: [],
+        }),
+      );
     } else {
       ocrTargets.push({ pageNum: i, fallbackText: text });
     }
@@ -252,6 +266,8 @@ export async function ingestPdf(filePath: string): Promise<PdfChunk[]> {
     chunks.push(...ocrChunks);
   }
 
-  chunks.sort((a, b) => a.pageNum - b.pageNum);
+  chunks.sort(
+    (a, b) => a.pageNum - b.pageNum || (a.segment ?? 0) - (b.segment ?? 0),
+  );
   return chunks;
 }
