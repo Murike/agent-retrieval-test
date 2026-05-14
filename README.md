@@ -63,6 +63,33 @@ src/
 └── index.ts                     — dotenv + env validation + REPL bootstrap
 ```
 
+## Tech & packages
+
+Grouped by role; versions in `package.json`.
+
+**LLM & embeddings**
+- **`ai`** (Vercel AI SDK) — `generateText` with `tools` provides the iterate-with-tool-calls loop out of the box; no hand-rolled orchestration. Also supplies the `CoreMessage` type used for chat history.
+- **`@ai-sdk/openai`** — OpenAI provider for the SDK; backs `gpt-4o` (agent reasoning), `gpt-4o-mini` (column-mapping LLM fallback), and `text-embedding-3-small` (embeddings).
+- **`zod`** — parameter schemas for every tool, `AgentAnswer` validation after the loop, and the dynamic CSV row schema built from column mappings.
+
+**Retrieval**
+- **`@orama/orama`** — single native-TS engine handling BM25 + vector fusion via `mode: "hybrid"`. No server, no native bindings, runs in heap. Filters (`source`, `qualityScore`) pushed into the index via `where`.
+
+**Ingestion**
+- **`papaparse`** — robust CSV parser; handles quotes, headers, ragged rows, and inconsistent whitespace without configuration.
+- **`pdfjs-dist`** (legacy Node build) — Mozilla's PDF parser; extracts the text layer when present.
+- **`execa`** — shells out to `ocrmypdf` (primary OCR path) with stdio inherited so progress shows in the REPL.
+- **`pdf-to-img`** (dynamically imported) — pure-Node PDF rasterizer for the fallback OCR path; loaded lazily so its absence doesn't break module load.
+- **`tesseract.js`** — pure-JS Tesseract for the fallback OCR path; works anywhere Node runs, no system Tesseract install required.
+
+**Runtime**
+- **`dotenv`** — loads `OPENAI_API_KEY` from `.env` at startup.
+- **`node:repl`** (built-in) — interactive shell; no CLI framework dependency.
+
+**Dev**
+- **`typescript`** + **`tsx`** — `tsx src/index.ts` for the dev REPL, `tsc` for the production build.
+- **`vitest`** — Jest-compatible runner; `vi.mock` lets tests mock at module boundaries without DI plumbing.
+
 ## Key decisions
 
 ### Chunking strategy
