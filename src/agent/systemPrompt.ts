@@ -34,25 +34,24 @@ Top-N "top by X" queries (e.g., "top 5 most expensive items", "best-selling prod
   - "Highest unit price / most expensive per unit" (any domain) → \`aggregate: "max"\`, \`on: "price"\`.
   - "Largest quantity / most stocked" → \`aggregate: "sum"\` or \`"max"\`, \`on: "quantity"\`.
 - Each result group includes: \`label\`, \`identifiers\`, \`unit\`, \`rowCount\`, \`aggregateValue\`, \`primary\` (or null), \`quantity\`, \`priceRange\` ({min, max}), and \`parties\` (sorted by rank ascending when the data has a rank-role column, otherwise by price ascending).
-- When \`primary\` is non-null, the data carries a rank-role column and \`primary\` is the row the dataset designates as canonical for the group (e.g., the rank-1 bid). In that case, USE \`primary.party\`, \`primary.price\`, and \`primary.lineTotal\` for the Bidder, Unit Price, and Extended Amount lines — do not use \`parties[0]\` or \`aggregateValue\` for those fields. When \`primary\` is null, fall back to \`parties[0]\` and \`aggregateValue\` as documented in the template.
-- Return ALL N groups; never truncate. For each group, render a multi-line Markdown block using this template (the "answer" string is one long string with literal newlines \\n separating blocks):
+- Return ALL N groups; never truncate. Each group renders as one Markdown block; the "answer" string is all blocks concatenated with literal \\n newlines:
 
-  <rank>. **<label>**\\n
-     - <Party field label>: <parties[0].party>\\n
-     - <Amount field label>: $<aggregateValue formatted with commas>\\n
-     - <Price field label>: $<parties[0].price> per <unit>\\n
-     - <Quantity field label>: <quantity formatted with commas> <unit>\\n
-     - <Count field label>: <rowCount>\\n
-     - Price range: $<priceRange.min> – $<priceRange.max>\\n
-     - Identifiers: <id1>=<v1>, <id2>=<v2>, ...
+  <rank>. **<headline>**\\n
+     - <caption>: <value>\\n
+     - <caption>: <value>\\n
+     ...
 
-- Pick field labels that match the data domain by reading the schema preface's semanticLabel for each role. Trim to a short, natural Title Case label. Examples:
-  - bid data → "Bidder", "Extended Amount", "Unit Price", "Quantity", "Bid Count"
-  - sales/orders → "Customer" or "Vendor", "Order Total", "Unit Price", "Quantity", "Order Count"
-  - expenses → "Vendor", "Total Spend", "Unit Cost", "Quantity", "Line Count"
-- Omit a field if the tool returned no data for it (e.g. \`quantity\` is null, \`priceRange\` is null, no party-role column mapped). Never echo the placeholder names from the template.
-- If \`label\` is empty (no label-role column mapped), lead the block with the identifiers joined as \`<id1>=<v1>, <id2>=<v2>\` instead of \`**<label>**\`. Never produce a list that only shows identifiers when label values are available.
-- The \`aggregateValue\` is already the per-group rolled-up number — don't recompute it. Format numbers with thousands separators and two decimals where appropriate ("$1,046,189.14", "2,432,998 LF").
+- HEADLINE — use the group's \`label\` if non-empty; otherwise list its identifiers as \`<semanticLabel>=<value>\` pairs (look up each identifier's semanticLabel in the schema preface by its mappedName).
+- CAPTIONS — for every bullet, the caption is the schema preface's \`semanticLabel\` for the underlying column. Use it verbatim, with two trims: if the semanticLabel contains slash-separated alternatives ("Bidder / contractor / vendor") use only the first item ("Bidder"); strip trailing parenthetical clauses ("Extended (line-total) amount" → "Extended amount").
+- BULLETS — render one per populated source, in this order, omitting any whose value is null, empty, or zero for numeric roles:
+  - For each \`identifier\` role column NOT already used in the headline → "<identifier semanticLabel>: <value>".
+  - For the \`party\` role (when a party column exists) → "<party semanticLabel>: <primary.party if primary is non-null, else parties[0].party>".
+  - For the \`amount\` role → "<amount semanticLabel>: $<primary.lineTotal if primary is non-null, else aggregateValue>" (thousands separators, two decimals).
+  - For the \`price\` role → "<price semanticLabel>: $<primary.price if primary is non-null, else parties[0].price>" (thousands separators, two decimals; append " per <unit>" when \`unit\` is non-empty).
+  - For the \`quantity\` role (group-level \`quantity\` field) → "<quantity semanticLabel>: <quantity>" (thousands separators; append " <unit>" when \`unit\` is non-empty).
+  - When \`priceRange\` is non-null → "<price semanticLabel> range: $<priceRange.min> – $<priceRange.max>".
+  - Always when \`rowCount\` > 0 → "Row count: <rowCount>".
+- Don't print placeholder lines for missing values. Don't invent fields the tool didn't return. Don't recompute values the tool already rolled up.
 
 Comparisons, outliers, summaries:
 - When comparing values (lowest, highest, outlier), state both the named record (with its label) and the comparison context (e.g., "ASPHALT (ITEM_NO=4040350): Acme at $93.90/ton — 36% below the median of $122.00, flagged by iqr and ratio_to_min").
