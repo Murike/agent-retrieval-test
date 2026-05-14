@@ -12,6 +12,7 @@ vi.mock("ai", async () => {
         data_caveats: ["Engineer estimate unavailable"],
         sources: [{ type: "csv_row", reference: "csv::file::P1::100" }],
       }),
+      response: { messages: [] },
     })),
   };
 });
@@ -20,7 +21,7 @@ import { runAgent } from "../src/agent/agent.js";
 
 describe("runAgent end-to-end", () => {
   it("returns a structured AgentAnswer with caveats and sources", async () => {
-    const answer = await runAgent("Who has the cheapest bid for ITEM 100?");
+    const { answer } = await runAgent("Who has the cheapest bid for ITEM 100?", []);
 
     expect(answer.answer).toContain("Alpha");
     expect(answer.confidence).toBe("high");
@@ -38,9 +39,10 @@ describe("runAgent end-to-end", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       text: "I have no idea, sorry.",
+      response: { messages: [] },
     } as any);
 
-    const answer = await runAgent("nonsense");
+    const { answer } = await runAgent("nonsense", []);
     expect(answer.confidence).toBe("low");
     expect(answer.grounded_in_context).toBe(false);
     expect(answer.data_caveats.length).toBeGreaterThan(0);

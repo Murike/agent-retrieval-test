@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { generateText, type CoreMessage } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
@@ -46,7 +46,14 @@ function extractJson(text: string): string | null {
   return text.slice(start, end + 1);
 }
 
-export async function runAgent(userQuery: string): Promise<AgentAnswer> {
+export async function runAgent(
+  userQuery: string,
+  history: CoreMessage[],
+): Promise<{ answer: AgentAnswer; history: CoreMessage[] }> {
+  const userMessage: CoreMessage = {
+    role: "user",
+    content: buildPrompt(userQuery),
+  };
   const result = await generateText({
     model: openai("gpt-4o"),
     maxSteps: 10,
@@ -57,33 +64,44 @@ export async function runAgent(userQuery: string): Promise<AgentAnswer> {
       analyzeBidItems,
       queryPlanSet,
     },
-    prompt: buildPrompt(userQuery),
+    messages: [...history, userMessage],
   });
+  const nextHistory: CoreMessage[] = [
+    ...history,
+    userMessage,
+    ...result.response.messages,
+  ];
 
   const raw = extractJson(result.text);
   if (!raw) {
     return {
-      answer: result.text || "No answer produced.",
-      confidence: "low",
-      grounded_in_context: false,
-      data_caveats: ["Agent did not return JSON; raw model text was preserved."],
-      sources: [],
+      answer: {
+        answer: result.text || "No answer produced.",
+        confidence: "low",
+        grounded_in_context: false,
+        data_caveats: ["Agent did not return JSON; raw model text was preserved."],
+        sources: [],
+      },
+      history: nextHistory,
     };
   }
 
   try {
     const parsed = JSON.parse(raw);
     const validated = AgentAnswerSchema.parse(parsed);
-    return validated;
+    return { answer: validated, history: nextHistory };
   } catch (err) {
     return {
-      answer: result.text,
-      confidence: "low",
-      grounded_in_context: false,
-      data_caveats: [
-        `Agent output failed schema validation: ${err instanceof Error ? err.message : String(err)}`,
-      ],
-      sources: [],
+      answer: {
+        answer: result.text,
+        confidence: "low",
+        grounded_in_context: false,
+        data_caveats: [
+          `Agent output failed schema validation: ${err instanceof Error ? err.message : String(err)}`,
+        ],
+        sources: [],
+      },
+      history: nextHistory,
     };
   }
 }

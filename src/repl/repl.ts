@@ -1,4 +1,5 @@
 import repl from "node:repl";
+import type { CoreMessage } from "ai";
 import { ingest, listIngested } from "../ingestion/ingestor.js";
 import { runAgent } from "../agent/agent.js";
 
@@ -10,6 +11,7 @@ function printHelp(): void {
       "  /quit              exit",
       "  /files             list ingested files",
       "  /ingest <path>     ingest a CSV or PDF file",
+      "  /reset             clear conversation history",
       "  <free text>        ask the agent a question",
     ].join("\n"),
   );
@@ -66,6 +68,8 @@ async function handleCommand(
 }
 
 export function startRepl(): void {
+  let history: CoreMessage[] = [];
+
   const server = repl.start({
     prompt: "> ",
     ignoreUndefined: true,
@@ -78,13 +82,21 @@ export function startRepl(): void {
           return;
         }
 
+        if (line === "/reset") {
+          history = [];
+          console.log("Conversation history cleared.");
+          callback(null, undefined);
+          return;
+        }
+
         if (line.startsWith("/")) {
           await handleCommand(line, server);
           callback(null, undefined);
           return;
         }
 
-        const answer = await runAgent(line);
+        const { answer, history: nextHistory } = await runAgent(line, history);
+        history = nextHistory;
         console.log(answer.answer);
         callback(null, undefined);
       } catch (error) {
